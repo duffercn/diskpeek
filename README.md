@@ -21,14 +21,21 @@ A fast terminal file explorer for macOS — find large files, preview them, and 
 
 ## Installation
 
-### Option A — Direct download (recommended)
+### Option A — Homebrew (easiest)
+
+```bash
+brew tap duffercn/diskpeek
+brew install diskpeek
+```
+
+### Option B — Direct download
 
 ```bash
 curl -L https://github.com/duffercn/diskpeek/releases/latest/download/diskpeek \
   -o /usr/local/bin/diskpeek && chmod +x /usr/local/bin/diskpeek
 ```
 
-### Option B — Run from source (requires Python 3.9+, no extra packages)
+### Option C — Run from source (requires Python 3.9+, no extra packages)
 
 ```bash
 curl -O https://raw.githubusercontent.com/duffercn/diskpeek/main/diskpeek.py
