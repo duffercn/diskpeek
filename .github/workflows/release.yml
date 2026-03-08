@@ -11,6 +11,9 @@ permissions:
 jobs:
   build-macos:
     runs-on: macos-latest
+    outputs:
+      sha256: ${{ steps.sha.outputs.sha256 }}
+      version: ${{ steps.sha.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,11 +29,62 @@ jobs:
       - name: Build binary
         run: |
           pyinstaller --onefile --name diskpeek diskpeek.py
-          # Smoke-test: binary must exist and be executable
           test -x dist/diskpeek
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          echo "sha256=$(shasum -a 256 dist/diskpeek | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
           files: dist/diskpeek
           generate_release_notes: true
+
+  update-homebrew:
+    needs: build-macos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: duffercn/homebrew-diskpeek
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update formula
+        env:
+          VERSION: ${{ needs.build-macos.outputs.version }}
+          SHA256: ${{ needs.build-macos.outputs.sha256 }}
+        run: |
+          cat > Formula/diskpeek.rb << FORMULA
+          class Diskpeek < Formula
+            desc "Fast macOS terminal file explorer — find large files, preview, and clean up disk space"
+            homepage "https://github.com/duffercn/diskpeek"
+            version "${VERSION}"
+
+            on_macos do
+              url "https://github.com/duffercn/diskpeek/releases/download/v${VERSION}/diskpeek"
+              sha256 "${SHA256}"
+            end
+
+            def install
+              bin.install "diskpeek"
+            end
+
+            test do
+              assert_predicate bin/"diskpeek", :executable?
+            end
+          end
+          FORMULA
+
+      - name: Commit and push
+        env:
+          VERSION: ${{ needs.build-macos.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/diskpeek.rb
+          git commit -m "Update diskpeek to v${VERSION}"
+          git push
