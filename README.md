@@ -2,7 +2,13 @@
 
 A fast terminal file explorer for macOS — find large files, preview them, and clean up disk space without leaving your terminal.
 
-![diskpeek screenshot placeholder](https://via.placeholder.com/800x400?text=diskpeek+TUI)
+Tree Mode
+<img width="1137" height="537" alt="image" src="https://github.com/user-attachments/assets/241f68a5-5497-4703-a602-c963b60e69a4" />
+
+Flat Mode
+<img width="1137" height="537" alt="image" src="https://github.com/user-attachments/assets/8643b6a8-f157-4aae-a087-41e47c88d37f" />
+
+
 
 ## Features
 
