@@ -14,7 +14,8 @@ A fast terminal file explorer for macOS — find large files, preview them, and 
 - **Multi-select** with `Space` — tag files and batch delete or move in one go
 - **Move to folder** — send files to a configurable destination (default: `~/Downloads`)
 - **Copy path** to clipboard with `c`
-- **Fast scanning** — concurrent `stat()` calls + incremental results while scanning
+- **Go-powered scanner** — native binary walks + stats concurrently; falls back to pure Python if unavailable
+- **Skip hidden by default** — dotfiles/dirs ignored unless you pass `-a` or press `a` at runtime
 - **Smart cache** — entering a subdirectory reuses the parent scan instantly
 
 ---
@@ -47,9 +48,10 @@ python3 diskpeek.py
 ## Usage
 
 ```bash
-diskpeek                  # scan current directory
+diskpeek                  # scan current directory (hidden files skipped)
 diskpeek ~/Downloads      # scan a specific directory
 diskpeek /               # scan entire disk (takes a moment)
+diskpeek -a ~/            # include hidden files and directories (dotfiles)
 ```
 
 ---
@@ -67,6 +69,7 @@ diskpeek /               # scan entire disk (takes a moment)
 | `g` / `G` | Jump to top / bottom of list |
 | `PgUp` / `PgDn` | Page up / down |
 | `TAB` | Toggle between **tree** and **flat** mode |
+| `a` | Toggle hidden files/directories on or off |
 
 ### File Actions
 

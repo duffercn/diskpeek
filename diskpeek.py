@@ -12,17 +12,23 @@ Keys:
   Backspace / ← / h / - / u   go up one level
   ~                 jump back to root (starting directory)
   TAB               toggle tree ↔ flat mode
-  SPACE             Quick Look preview (files only)
+  a                 toggle hidden files/dirs (dotfiles) on/off
+  SPACE             tag / untag file for batch operations
   c                 copy selected path to clipboard
   o                 open selected file/folder with default app (Finder for dirs)
   m                 move selected file to move destination (default: ~/Downloads)
   M                 change move destination folder
   d                 delete selected file (confirm with y)
+  p                 Quick Look preview (files only)
   /                 filter by name  (ESC to clear, Enter to confirm)
   g / G             jump to top / bottom
   PgUp / PgDn       page up / down
   r                 rescan current directory
   q                 quit
+
+Usage:
+  diskpeek [path]      scan path (default: current directory), skip hidden
+  diskpeek -a [path]   include hidden files/directories (dotfiles)
 """
 
 import curses
@@ -111,8 +117,9 @@ class Scanner:
     # stat() is I/O-bound so more threads = faster on SSDs.
     _STAT_WORKERS = min(32, (os.cpu_count() or 4) * 4)
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, show_hidden: bool = False):
         self.root = root
+        self.show_hidden = show_hidden
         self._files: list = []          # [(size, Path)] sorted largest-first
         self._tree_cache: list = []     # cached tree_items() result
         self._total_size: int = 0       # sum of all file sizes (for title bar)
@@ -168,6 +175,8 @@ class Scanner:
                 with os.scandir(dirpath) as it:
                     for entry in it:
                         try:
+                            if not self.show_hidden and entry.name.startswith("."):
+                                continue
                             if entry.is_symlink():
                                 continue
                             if entry.is_file(follow_symlinks=False):
@@ -192,38 +201,106 @@ class Scanner:
         except OSError:
             return None
 
+    @staticmethod
+    def _find_scanner_binary():
+        """
+        Locate the diskpeek-scanner Go binary. Returns path string or None.
+        Priority: PyInstaller bundle → script directory → PATH.
+        """
+        name = "diskpeek-scanner"
+        # 1. PyInstaller bundle (sys._MEIPASS is the temp extraction dir)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidate = os.path.join(meipass, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        # 2. Same directory as this script
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            for d in (script_dir, os.path.join(script_dir, "scanner")):
+                candidate = os.path.join(d, name)
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    return candidate
+        except NameError:
+            pass
+        # 3. System PATH
+        return shutil.which(name)
+
     def _run(self):
+        binary = self._find_scanner_binary()
         results = []
         try:
-            # ── Phase 1: walk (fast — no stat() per entry) ─────────────────
-            with self._lock:
-                self._phase = "walking"
-            all_paths = self._walk()
-            with self._lock:
-                self._found = len(all_paths)
-                self._phase = "sizing"
-
-            # ── Phase 2: stat concurrently ──────────────────────────────────
-            FLUSH_EVERY = 2000
-            with ThreadPoolExecutor(max_workers=self._STAT_WORKERS) as pool:
-                for i, item in enumerate(
-                    pool.map(self._stat_one, all_paths, chunksize=256)
-                ):
-                    if item is not None:
-                        results.append(item)
-                    if (i + 1) % FLUSH_EVERY == 0:
-                        self._publish(sorted(results, reverse=True))
-
+            if binary:
+                results = self._run_go(binary)
+            else:
+                results = self._run_python()
         except Exception as e:
             self.error = str(e)
-
         self._publish(sorted(results, reverse=True))
         with self._lock:
             self._phase = "done"
             self.done = True
 
+    def _run_go(self, binary: str) -> list:
+        """
+        Use the Go scanner binary: streams 'size\\tpath\\n' lines from stdout.
+        Returns the collected [(size, Path)] list.
+        """
+        with self._lock:
+            self._phase = "sizing"  # Go does walk+stat in one pass
+        cmd = [binary]
+        if self.show_hidden:
+            cmd.append("-a")
+        cmd.append(str(self.root))
+
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, bufsize=0)
+        except OSError as e:
+            self.error = f"scanner launch failed: {e}; falling back to Python"
+            return self._run_python()
+
+        results = []
+        FLUSH_EVERY = 2000
+        for raw in iter(proc.stdout.readline, b""):
+            raw = raw.rstrip(b"\n")
+            if not raw:
+                continue
+            try:
+                tab = raw.index(b"\t")
+                size = int(raw[:tab])
+                path = Path(raw[tab + 1:].decode("utf-8", errors="replace"))
+                results.append((size, path))
+            except (ValueError, IndexError):
+                continue
+            if len(results) % FLUSH_EVERY == 0:
+                self._publish(sorted(results, reverse=True))
+        proc.wait()
+        return results
+
+    def _run_python(self) -> list:
+        """Pure-Python walk+stat fallback. Returns [(size, Path)] list."""
+        results = []
+        with self._lock:
+            self._phase = "walking"
+        all_paths = self._walk()
+        with self._lock:
+            self._found = len(all_paths)
+            self._phase = "sizing"
+
+        FLUSH_EVERY = 2000
+        with ThreadPoolExecutor(max_workers=self._STAT_WORKERS) as pool:
+            for i, item in enumerate(
+                pool.map(self._stat_one, all_paths, chunksize=256)
+            ):
+                if item is not None:
+                    results.append(item)
+                if (i + 1) % FLUSH_EVERY == 0:
+                    self._publish(sorted(results, reverse=True))
+        return results
+
     @classmethod
-    def from_files(cls, root: Path, files: list) -> "Scanner":
+    def from_files(cls, root: Path, files: list, show_hidden: bool = False) -> "Scanner":
         """
         Create a Scanner pre-populated from a parent's file list.
         _files is available immediately (flat mode works at once).
@@ -231,6 +308,7 @@ class Scanner:
         """
         inst = object.__new__(cls)
         inst.root = root
+        inst.show_hidden = show_hidden
         inst._lock = threading.Lock()
         inst._files = files          # sorted, ready immediately
         inst._tree_cache = []
@@ -347,7 +425,7 @@ _SPINNER = r"|/-\\"
 
 def draw(stdscr, *, root, current_dir, mode, items, selected, offset,
          filter_str, filter_mode, status, scanning, found, phase, total_size,
-         move_target, move_target_mode, move_target_input, tagged_files):
+         move_target, move_target_mode, move_target_input, tagged_files, show_hidden):
     h, w = stdscr.getmaxyx()
     HEADER, FOOTER = 3, 2
     list_h = max(1, h - HEADER - FOOTER)
@@ -356,6 +434,7 @@ def draw(stdscr, *, root, current_dir, mode, items, selected, offset,
 
     # ── Title ──────────────────────────────────────────────────────────────────
     mode_tag = "[FLAT]" if mode == "flat" else "[TREE]"
+    hidden_tag = "  [+hidden]" if show_hidden else ""
     if scanning:
         spin = _SPINNER[int(time.time() * 6) % len(_SPINNER)]
         verb = "walking…" if phase == "walking" else "sizing…"
@@ -363,7 +442,7 @@ def draw(stdscr, *, root, current_dir, mode, items, selected, offset,
     else:
         scan_tag = ""
     tag_tag = f"  {len(tagged_files)} tagged" if tagged_files else ""
-    title = f" diskpeek {mode_tag}  {current_dir}  [{len(items)} items | {human_size(total_size)}]{tag_tag}{scan_tag}"
+    title = f" diskpeek {mode_tag}{hidden_tag}  {current_dir}  [{len(items)} items | {human_size(total_size)}]{tag_tag}{scan_tag}"
     try:
         title_color = curses.color_pair(C_TITLE_BUSY if scanning else C_TITLE)
         stdscr.addstr(0, 0, title[:w - 1], title_color | curses.A_BOLD)
@@ -478,9 +557,9 @@ def draw(stdscr, *, root, current_dir, mode, items, selected, offset,
 
     # ── Help bar ───────────────────────────────────────────────────────────────
     if mode == "tree":
-        help_str = " ↑↓/jk nav  Enter/l enter  h/-/BS up  ~ root  TAB flat  SPACE tag  T clr  p preview  m move  M dest  c copy  o open  d del  / filter  q quit"
+        help_str = " ↑↓/jk nav  Enter/l enter  h/-/BS up  ~ root  TAB flat  a hidden  SPACE tag  T clr  p preview  m move  M dest  c copy  o open  d del  / filter  q quit"
     else:
-        help_str = " ↑↓/jk nav  h/-/BS up  ~ root  TAB tree  SPACE tag  T clr  p preview  m move  M dest  c copy  o open  d del  / filter  g/G  r rescan  q quit"
+        help_str = " ↑↓/jk nav  h/-/BS up  ~ root  TAB tree  a hidden  SPACE tag  T clr  p preview  m move  M dest  c copy  o open  d del  / filter  g/G  r rescan  q quit"
     try:
         stdscr.addstr(h - 1, 0, help_str[:w - 1], curses.color_pair(C_DIM))
     except curses.error:
@@ -501,7 +580,7 @@ def clamp_scroll(selected: int, offset: int, list_h: int) -> int:
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
-def main(stdscr, root: Path):
+def main(stdscr, root: Path, show_hidden: bool = False):
     curses.curs_set(0)
     curses.use_default_colors()
     curses.init_pair(C_SEL,   curses.COLOR_BLACK,  curses.COLOR_CYAN)
@@ -521,6 +600,7 @@ def main(stdscr, root: Path):
     # ── State ──────────────────────────────────────────────────────────────────
     current_dir: Path = root
     mode: str = "tree"            # "tree" | "flat"
+    _show_hidden: bool = show_hidden
 
     # Navigation history for back: stack of (dir, selected, offset)
     nav_stack: list = []
@@ -544,9 +624,9 @@ def main(stdscr, root: Path):
             with scanner_cache[best_ancestor]._lock:
                 derived = [(s, p) for s, p in scanner_cache[best_ancestor]._files
                            if is_under(p, d)]
-            scanner_cache[d] = Scanner.from_files(d, derived)
+            scanner_cache[d] = Scanner.from_files(d, derived, show_hidden=_show_hidden)
         else:
-            scanner_cache[d] = Scanner(d)
+            scanner_cache[d] = Scanner(d, show_hidden=_show_hidden)
 
         return scanner_cache[d]
 
@@ -601,6 +681,7 @@ def main(stdscr, root: Path):
             move_target_mode=move_target_mode,
             move_target_input=move_target_input,
             tagged_files=tagged_files,
+            show_hidden=_show_hidden,
         )
 
         key = stdscr.getch()
@@ -671,6 +752,17 @@ def main(stdscr, root: Path):
             filter_str = ""
             selected = 0
             offset = 0
+
+        # Toggle hidden files/dirs (dotfiles)
+        elif key == ord("a"):
+            _show_hidden = not _show_hidden
+            scanner_cache.clear()
+            tagged_files.clear()
+            scanner = get_scanner(current_dir)
+            selected = 0
+            offset = 0
+            filter_str = ""
+            status = f"Hidden files {'shown' if _show_hidden else 'hidden'}."
 
         # Filter
         elif key == ord("/"):
@@ -917,11 +1009,16 @@ def main(stdscr, root: Path):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    root = Path(os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "."))
+    args = sys.argv[1:]
+    show_hidden = False
+    if args and args[0] in ("-a", "--all"):
+        show_hidden = True
+        args = args[1:]
+    root = Path(os.path.abspath(args[0] if args else "."))
     if not root.is_dir():
         print(f"Not a directory: {root}", file=sys.stderr)
         sys.exit(1)
     try:
-        curses.wrapper(main, root)
+        curses.wrapper(main, root, show_hidden)
     except KeyboardInterrupt:
         pass

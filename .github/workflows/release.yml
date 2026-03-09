@@ -23,12 +23,33 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
       - name: Install PyInstaller
         run: pip install pyinstaller
 
+      - name: Build Go scanner (universal binary)
+        run: |
+          cd scanner
+          GOARCH=amd64 GOOS=darwin CGO_ENABLED=0 \
+            go build -ldflags="-s -w" -o diskpeek-scanner-amd64 .
+          GOARCH=arm64 GOOS=darwin CGO_ENABLED=0 \
+            go build -ldflags="-s -w" -o diskpeek-scanner-arm64 .
+          lipo -create \
+            -output diskpeek-scanner \
+            diskpeek-scanner-amd64 \
+            diskpeek-scanner-arm64
+          test -x diskpeek-scanner
+          cd ..
+
       - name: Build binary
         run: |
-          pyinstaller --onefile --name diskpeek diskpeek.py
+          pyinstaller --onefile --name diskpeek \
+            --add-binary "scanner/diskpeek-scanner:." \
+            diskpeek.py
           test -x dist/diskpeek
 
       - name: Compute SHA256
