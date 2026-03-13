@@ -303,32 +303,21 @@ class Scanner:
     def from_files(cls, root: Path, files: list, show_hidden: bool = False) -> "Scanner":
         """
         Create a Scanner pre-populated from a parent's file list.
-        _files is available immediately (flat mode works at once).
-        _tree_cache is built in a background thread so the UI isn't blocked.
+        Everything is computed synchronously (pure in-memory, no I/O) so the
+        UI shows no spinner when navigating into an already-scanned directory.
         """
         inst = object.__new__(cls)
         inst.root = root
         inst.show_hidden = show_hidden
         inst._lock = threading.Lock()
-        inst._files = files          # sorted, ready immediately
-        inst._tree_cache = []
-        inst._total_size = 0
+        inst._files = files
+        inst._tree_cache = inst._build_tree_cache(files)
+        inst._total_size = sum(s for s, _ in files)
         inst._found = len(files)
-        inst._phase = "sizing"       # show brief spinner while tree is built
-        inst.done = False
+        inst._phase = "done"
+        inst.done = True
         inst.error = ""
-        threading.Thread(target=inst._finish_from_files, daemon=True).start()
         return inst
-
-    def _finish_from_files(self):
-        """Background: build tree cache from already-loaded _files."""
-        tree  = self._build_tree_cache(self._files)
-        total = sum(s for s, _ in self._files)
-        with self._lock:
-            self._tree_cache = tree
-            self._total_size = total
-            self._phase = "done"
-            self.done = True
 
     @property
     def scanning(self) -> bool:
