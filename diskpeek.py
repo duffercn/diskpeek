@@ -954,17 +954,18 @@ def main(stdscr, root: Path, show_hidden: bool = False):
             if not targets:
                 # fall back to current item
                 cur = selected_path()
-                if cur is None or cur is DOTDOT or cur.is_dir():
-                    status = "Cannot delete a folder here. Enter it first, or switch to flat mode."
+                if cur is None or cur is DOTDOT:
                     continue
                 targets = [cur]
 
             n = len(targets)
             h2, w2 = stdscr.getmaxyx()
             if n == 1:
-                prompt = f" Delete {targets[0].name}? [y/N]: "
+                t = targets[0]
+                label = f"{t.name}/" if t.is_dir() else t.name
+                prompt = f" Delete {label}? [y/N]: "
             else:
-                prompt = f" Delete {n} tagged files? [y/N]: "
+                prompt = f" Delete {n} items? [y/N]: "
             try:
                 stdscr.addstr(h2 - 2, 0, " " * (w2 - 1), curses.color_pair(C_WARN))
                 stdscr.addstr(h2 - 2, 0, prompt[:w2 - 1], curses.color_pair(C_WARN) | curses.A_BOLD)
@@ -976,21 +977,35 @@ def main(stdscr, root: Path, show_hidden: bool = False):
             stdscr.timeout(150)
 
             if confirm == ord("y"):
-                errors, done = [], []
+                errors, done, done_dirs = [], [], []
                 for path in targets:
+                    is_dir = path.is_dir()
                     try:
-                        path.unlink()
+                        if is_dir:
+                            shutil.rmtree(path)
+                            done_dirs.append(path)
+                        else:
+                            path.unlink()
                         done.append(path)
                     except OSError as e:
                         errors.append(f"{path.name}: {e}")
                 for path in done:
                     tagged_files.discard(path)
                     for sc in scanner_cache.values():
-                        sc.remove_file(path)
+                        if path in done_dirs:
+                            # Remove all cached files under deleted dir
+                            under = [p for _, p in sc._files if str(p).startswith(str(path) + "/")]
+                            for cached in under:
+                                sc.remove_file(cached)
+                            # Also drop the dir entry from tree cache directly
+                            with sc._lock:
+                                sc._tree_cache = [(s, d, p) for s, d, p in sc._tree_cache if p != path]
+                        else:
+                            sc.remove_file(path)
                 if errors:
                     status = f"Deleted {len(done)}, errors: {'; '.join(errors)}"
                 else:
-                    status = f"Deleted {len(done)} file{'s' if len(done) != 1 else ''}."
+                    status = f"Deleted {len(done)} item{'s' if len(done) != 1 else ''}."
             else:
                 status = "Cancelled."
 
