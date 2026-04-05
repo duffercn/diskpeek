@@ -559,15 +559,12 @@ class DiskPeekWindow(QMainWindow):
             if path is None:
                 return
             meta = self._selected_meta()
-            if meta and meta[2]:
-                self._set_status("Cannot delete folders here. Enter it first or switch to Flat mode.")
-                return
             targets = [path]
 
         n = len(targets)
         msg = (f"Permanently delete '{targets[0].name}'?"
                if n == 1 else
-               f"Permanently delete {n} tagged files?")
+               f"Permanently delete {n} tagged items?")
         btn = QMessageBox.warning(self, "Confirm Delete", msg,
                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                   QMessageBox.StandardButton.No)
@@ -578,7 +575,10 @@ class DiskPeekWindow(QMainWindow):
         errors, done = [], []
         for p in targets:
             try:
-                p.unlink()
+                if p.is_dir():
+                    shutil.rmtree(p)
+                else:
+                    p.unlink()
                 done.append(p)
             except OSError as e:
                 errors.append(f"{p.name}: {e}")

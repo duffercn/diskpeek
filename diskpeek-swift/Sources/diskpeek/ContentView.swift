@@ -387,8 +387,7 @@ struct ContentView: View {
     func onDelete() {
         var targets = Array(model.taggedURLs).sorted { $0.path < $1.path }
         if targets.isEmpty {
-            guard let item = selectedItem(), item.url != dotdotURL, !item.isDir else {
-                model.statusMessage = "Cannot delete folders here. Switch to Flat mode first."
+            guard let item = selectedItem(), item.url != dotdotURL else {
                 return
             }
             targets = [item.url]
